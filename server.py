@@ -15,6 +15,7 @@ def check(raw,encoded):
 
 class API(BaseHTTPRequestHandler):
  server_version='Jasine/1.0'
+ protocol_version='HTTP/1.1'
  def log_message(self,fmt,*args): print('[jasine]',fmt%args)
  def send_json(self,status,obj):
   data=json.dumps(obj).encode(); self.send_response(status); self.send_header('Content-Type','application/json'); self.send_header('Content-Length',len(data)); self.end_headers(); self.wfile.write(data)
@@ -51,8 +52,8 @@ class API(BaseHTTPRequestHandler):
     if not u['is_developer']: return self.send_json(403,{'error':'Developer access required'})
     return self.send_json(200,{k:[dict(x) for x in db.all(f'SELECT * FROM {k} WHERE user_id=? ORDER BY created_at DESC LIMIT 100',(u['id'],))] for k in ('memories','entities','relationships','reflections','feedback','model_runs')})
    return self.send_json(404,{'error':'Unknown endpoint'})
-  file=ROOT/'web'/('index.html' if path=='/' else path.lstrip('/'))
-  if not file.is_file() or ROOT/'web' not in file.resolve().parents: file=ROOT/'web'/'index.html'
+  file=ROOT/'index.html' if path=='/' else ROOT/'web'/path.lstrip('/')
+  if not file.is_file() or (file != ROOT/'index.html' and ROOT/'web' not in file.resolve().parents): file=ROOT/'index.html'
   data=file.read_bytes(); self.send_response(200); self.send_header('Content-Type',mimetypes.guess_type(file)[0] or 'text/plain'); self.send_header('Content-Length',len(data)); self.end_headers(); self.wfile.write(data)
  def do_POST(self):
   path=urlparse(self.path).path; b=self.body()
@@ -107,9 +108,12 @@ class API(BaseHTTPRequestHandler):
    except Exception as e: answer='I could not reach the configured language model. Please try again.'; err=str(e)
   amid=db.id(); db.run('INSERT INTO messages VALUES(?,?,?,?,?,?)',(amid,cid,'assistant',answer,now(),umid)); writes=brain.extract(u['id'],cid,umid,text); db.run('UPDATE conversations SET updated_at=? WHERE id=?',(now(),cid))
   db.run('INSERT INTO model_runs VALUES(?,?,?,?,?,?,?,?,?,?)',(db.id(),u['id'],cid,os.getenv('JASINE_MODEL','local-grounded'),int((time.time()-start)*1000),None,json.dumps([{'id':m['id'],'score':m['score']} for m in locals().get('memories',[])]),json.dumps(writes),locals().get('err'),now()))
-  # NDJSON is incrementally readable and simpler than pretending a non-streaming endpoint streams.
-  payload=''.join(json.dumps({'type':'delta','text':answer[i:i+24]})+'\n' for i in range(0,len(answer),24))+json.dumps({'type':'done','messageId':amid})+'\n'
-  data=payload.encode(); self.send_response(200); self.send_header('Content-Type','application/x-ndjson'); self.send_header('Cache-Control','no-cache'); self.send_header('Content-Length',len(data)); self.end_headers(); self.wfile.write(data)
+  # Send each event immediately. Connection-close framing works with browsers and
+  # avoids buffering the full response behind a Content-Length header.
+  self.send_response(200); self.send_header('Content-Type','application/x-ndjson'); self.send_header('Cache-Control','no-cache, no-transform'); self.send_header('X-Accel-Buffering','no'); self.send_header('Connection','close'); self.end_headers()
+  for i in range(0,len(answer),24):
+   self.wfile.write((json.dumps({'type':'delta','text':answer[i:i+24]})+'\n').encode()); self.wfile.flush()
+  self.wfile.write((json.dumps({'type':'done','messageId':amid})+'\n').encode()); self.wfile.flush(); self.close_connection=True
 
 if __name__=='__main__':
  port=int(os.getenv('PORT','8000')); print(f'Jasine running at http://localhost:{port}'); ThreadingHTTPServer(('0.0.0.0',port),API).serve_forever()

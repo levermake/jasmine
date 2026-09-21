@@ -30,3 +30,8 @@ memories/forget, feedback, entities, reflections, and developer inspection are
 all server-backed. Chat responses use incrementally readable NDJSON. Passwords
 are PBKDF2 hashed, sessions expire, and every conversation and memory query is
 owner-scoped.
+
+The web entry point is the repository-root `index.html` for easy discovery and
+static tooling compatibility. Its JavaScript and CSS remain organized under
+`web/`; the application server exposes the entry point at `/` and those assets
+at `/app.js` and `/style.css`.
