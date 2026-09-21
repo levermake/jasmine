@@ -26,6 +26,11 @@ class ApiTests(unittest.TestCase):
   _,messages=self.req('/messages?conversationId='+c3['id'],token=t); self.assertEqual(len(messages),2)
   _,forgot=self.req('/memories/forget','POST',{'query':"dog's name Luna"},t); self.assertGreater(forgot['forgotten'],0)
   _,hits=self.req("/memories/search?q=dog%27s%20name%20Luna",token=t); self.assertEqual(hits,[])
+  _,corrected=self.req('/feedback','POST',{'messageId':assistant,'kind':'correction','comment':'My preferred editor is Zed.'},t); self.assertEqual(corrected['memoryWrites'],1)
+  _,hits=self.req('/memories/search?q=preferred%20editor',token=t); self.assertIn('Zed',hits[0]['content'])
+  _,out=self.req('/logout','POST',{},t); self.assertTrue(out['signedOut'])
+  with self.assertRaises(urllib.error.HTTPError) as logged_out:self.req('/me',token=t)
+  self.assertEqual(logged_out.exception.code,401)
  def test_authentication_required(self):
   with self.assertRaises(urllib.error.HTTPError) as x:self.req('/conversations')
   self.assertEqual(x.exception.code,401)

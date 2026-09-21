@@ -83,6 +83,8 @@ class API(BaseHTTPRequestHandler):
   u=self.require()
   if not u:return
   if self.limited('user:'+u['id']): return
+  if path=='/api/logout':
+   token=self.headers.get('Authorization','').removeprefix('Bearer ').strip(); db.run('DELETE FROM sessions WHERE token=? AND user_id=?',(token,u['id'])); return self.send_json(200,{'signedOut':True})
   if path=='/api/conversations':
    cid=db.id(); ts=now(); title=str(b.get('title') or 'New conversation')[:80]; db.run('INSERT INTO conversations VALUES(?,?,?,?,?)',(cid,u['id'],title,ts,ts)); return self.send_json(201,{'id':cid,'title':title,'created_at':ts,'updated_at':ts})
   if path=='/api/memories/forget':
