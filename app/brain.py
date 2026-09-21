@@ -71,6 +71,25 @@ class BrainService:
             marks=','.join('?'*len(ids)); self.db.run(f"UPDATE memories SET active=0,valid_until=?,updated_at=? WHERE user_id=? AND id IN ({marks})",(now(),now(),user_id,*ids))
         return len(ids)
 
+    def reflect(self, user_id):
+        """Persist a compact, derived view of useful knowledge and recent changes."""
+        rows=self.db.all("SELECT * FROM memories WHERE user_id=? AND type!='reflection' ORDER BY updated_at DESC",(user_id,))
+        active=[r for r in rows if r['active']]
+        changed=[r for r in rows if r['superseded_by_id']]
+        if not active and not changed: return None
+        useful=sorted(active,key=lambda r:(r['access_count'],r['importance'],r['updated_at']),reverse=True)[:5]
+        parts=[]
+        if useful: parts.append("Useful current knowledge: "+"; ".join(r['content'] for r in useful))
+        if changed: parts.append(f"{len(changed)} earlier statement(s) have been superseded and remain preserved as history.")
+        content=" ".join(parts); provenance=[r['id'] for r in useful+changed[:5]]; ts=now(); rid=self.db.id()
+        previous=self.db.one("SELECT * FROM reflections WHERE user_id=? ORDER BY created_at DESC LIMIT 1",(user_id,))
+        if previous and previous['content']==content:
+            return {**dict(previous),'provenance':json.loads(previous['provenance'])}
+        self.db.run("INSERT INTO reflections(id,user_id,content,provenance,created_at) VALUES(?,?,?,?,?)",(rid,user_id,content,json.dumps(provenance),ts))
+        mid=self.db.id(); self.db.run("INSERT INTO memories(id,user_id,type,content,importance,confidence,embedding,created_at,updated_at,access_count,active,metadata) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+          (mid,user_id,'reflection',content,.65,.75,json.dumps(embed(content)),ts,ts,0,1,json.dumps({'derived':True,'provenance':provenance,'reflectionId':rid})))
+        return {'id':rid,'content':content,'provenance':provenance,'created_at':ts}
+
     def answer(self, context, memories):
         key=os.getenv('OPENAI_API_KEY')
         if key:

@@ -29,7 +29,11 @@ The API is under `/api`: authentication, conversations, chat, memories/search,
 memories/forget, feedback, entities, reflections, and developer inspection are
 all server-backed. Chat responses use incrementally readable NDJSON. Passwords
 are PBKDF2 hashed, sessions expire, and every conversation and memory query is
-owner-scoped.
+owner-scoped. Authentication and signed-in API calls are rate limited. A user
+can request reflection through `POST /api/reflections`; conclusions are stored
+as explicitly derived memories with source-memory provenance rather than being
+presented as direct user statements. Jasine also performs this reflection
+automatically after each five newly learned direct memories.
 
 The web entry point is the repository-root `index.html` for easy discovery and
 static tooling compatibility. Its JavaScript and CSS remain organized under

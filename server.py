@@ -16,6 +16,7 @@ def check(raw,encoded):
 class API(BaseHTTPRequestHandler):
  server_version='Jasine/1.0'
  protocol_version='HTTP/1.1'
+ rate_buckets={}
  def log_message(self,fmt,*args): print('[jasine]',fmt%args)
  def send_json(self,status,obj):
   data=json.dumps(obj).encode(); self.send_response(status); self.send_header('Content-Type','application/json'); self.send_header('Content-Length',len(data)); self.end_headers(); self.wfile.write(data)
@@ -29,6 +30,11 @@ class API(BaseHTTPRequestHandler):
   u=self.user()
   if not u: self.send_json(401,{'error':'Authentication required'})
   return u
+ def limited(self,key,maximum=90,window=60):
+  stamp=time.time(); bucket=[x for x in self.rate_buckets.get(key,[]) if stamp-x<window]
+  if len(bucket)>=maximum:
+   self.send_json(429,{'error':'Too many requests. Please wait a moment.'}); return True
+  bucket.append(stamp); self.rate_buckets[key]=bucket; return False
  def conversation(self,cid,uid): return db.one('SELECT * FROM conversations WHERE id=? AND user_id=?',(cid,uid))
  def do_GET(self):
   p=urlparse(self.path); path=p.path
@@ -39,6 +45,10 @@ class API(BaseHTTPRequestHandler):
    u=self.require()
    if not u:return
    if path=='/api/conversations': return self.send_json(200,[dict(x) for x in db.all('SELECT * FROM conversations WHERE user_id=? ORDER BY updated_at DESC',(u['id'],))])
+   if path=='/api/messages':
+    cid=parse_qs(p.query).get('conversationId',[''])[0]
+    if not self.conversation(cid,u['id']): return self.send_json(404,{'error':'Conversation not found'})
+    return self.send_json(200,[dict(x) for x in db.all('SELECT * FROM messages WHERE conversation_id=? ORDER BY created_at',(cid,))])
    m=re.fullmatch(r'/api/conversations/([^/]+)',path)
    if m:
     c=self.conversation(m.group(1),u['id'])
@@ -59,25 +69,38 @@ class API(BaseHTTPRequestHandler):
   path=urlparse(self.path).path; b=self.body()
   if b is None:return self.send_json(400,{'error':'Invalid JSON'})
   if path=='/api/register':
+   if self.limited('auth:'+self.client_address[0],10,60): return
    email=str(b.get('email','')).strip().lower(); pw=str(b.get('password',''))
    if not re.fullmatch(r'[^@\s]+@[^@\s]+\.[^@\s]+',email) or len(pw)<8:return self.send_json(422,{'error':'Valid email and 8+ character password required'})
    try: uid=db.id(); db.run('INSERT INTO users VALUES(?,?,?,?,?)',(uid,email,password(pw),now(),int(os.getenv('JASINE_DEV_EMAIL')==email)))
    except Exception:return self.send_json(409,{'error':'Account already exists'})
    return self.session(uid)
   if path=='/api/login':
+   if self.limited('auth:'+self.client_address[0],10,60): return
    u=db.one('SELECT * FROM users WHERE email=?',(str(b.get('email','')).lower(),))
    if not u or not check(str(b.get('password','')),u['password_hash']): return self.send_json(401,{'error':'Invalid credentials'})
    return self.session(u['id'])
   u=self.require()
   if not u:return
+  if self.limited('user:'+u['id']): return
   if path=='/api/conversations':
    cid=db.id(); ts=now(); title=str(b.get('title') or 'New conversation')[:80]; db.run('INSERT INTO conversations VALUES(?,?,?,?,?)',(cid,u['id'],title,ts,ts)); return self.send_json(201,{'id':cid,'title':title,'created_at':ts,'updated_at':ts})
-  if path=='/api/memories/forget': return self.send_json(200,{'forgotten':brain.forget(u['id'],str(b.get('query',''))[:500])})
+  if path=='/api/memories/forget':
+   query=str(b.get('query','')).strip()[:500]
+   if not query:return self.send_json(422,{'error':'A memory description is required'})
+   return self.send_json(200,{'forgotten':brain.forget(u['id'],query)})
+  if path=='/api/reflections':
+   reflection=brain.reflect(u['id']); return self.send_json(201,reflection or {'content':'There is not enough knowledge to reflect on yet.'})
   if path=='/api/feedback':
    kind=b.get('kind'); mid=b.get('messageId')
    owned=db.one('SELECT m.id FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE m.id=? AND c.user_id=?',(mid,u['id']))
    if kind not in ('up','down','correction','regenerate') or not owned:return self.send_json(422,{'error':'Invalid feedback'})
-   db.run('INSERT INTO feedback VALUES(?,?,?,?,?,?)',(db.id(),u['id'],mid,kind,str(b.get('comment',''))[:1000],now())); return self.send_json(201,{'saved':True})
+   comment=str(b.get('comment','')).strip()[:1000]
+   db.run('INSERT INTO feedback VALUES(?,?,?,?,?,?)',(db.id(),u['id'],mid,kind,comment,now()))
+   learned=[]
+   if kind=='correction' and comment:
+    message=db.one('SELECT conversation_id FROM messages WHERE id=?',(mid,)); learned=brain.extract(u['id'],message['conversation_id'],mid,comment)
+   return self.send_json(201,{'saved':True,'memoryWrites':len(learned)})
   m=re.fullmatch(r'/api/conversations/([^/]+)/chat',path)
   if m:return self.chat(u,m.group(1),str(b.get('message','')).strip(),b.get('parentId'))
   return self.send_json(404,{'error':'Unknown endpoint'})
@@ -107,6 +130,8 @@ class API(BaseHTTPRequestHandler):
    try: answer=brain.answer(ctx,memories); err=None
    except Exception as e: answer='I could not reach the configured language model. Please try again.'; err=str(e)
   amid=db.id(); db.run('INSERT INTO messages VALUES(?,?,?,?,?,?)',(amid,cid,'assistant',answer,now(),umid)); writes=brain.extract(u['id'],cid,umid,text); db.run('UPDATE conversations SET updated_at=? WHERE id=?',(now(),cid))
+  direct_count=db.one("SELECT count(*) n FROM memories WHERE user_id=? AND type!='reflection'",(u['id'],))['n']
+  if writes and direct_count%5==0: brain.reflect(u['id'])
   db.run('INSERT INTO model_runs VALUES(?,?,?,?,?,?,?,?,?,?)',(db.id(),u['id'],cid,os.getenv('JASINE_MODEL','local-grounded'),int((time.time()-start)*1000),None,json.dumps([{'id':m['id'],'score':m['score']} for m in locals().get('memories',[])]),json.dumps(writes),locals().get('err'),now()))
   # Send each event immediately. Connection-close framing works with browsers and
   # avoids buffering the full response behind a Content-Length header.

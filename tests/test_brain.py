@@ -31,5 +31,10 @@ class BrainTests(unittest.TestCase):
   self.assertIn('UNTRUSTED MEMORY DATA',ctx[0]['content']); self.assertLessEqual(len(ctx[1]['content']),10030); self.assertEqual(ctx[-1]['content'],'answer')
  def test_entity_linking(self):
   self.learn('My project is Atlas.'); self.assertIsNotNone(self.db.one("SELECT * FROM entities WHERE user_id=? AND name='Atlas'",(self.u1,)))
+ def test_reflection_is_derived_and_has_provenance(self):
+  self.learn('My favorite editor is Neovim.')
+  reflection=self.brain.reflect(self.u1); self.assertIn('Neovim',reflection['content']); self.assertTrue(reflection['provenance'])
+  memory=self.db.one("SELECT * FROM memories WHERE user_id=? AND type='reflection'",(self.u1,)); self.assertIn('derived',memory['metadata'])
+  self.brain.reflect(self.u1); self.assertEqual(self.db.one('SELECT count(*) n FROM reflections')['n'],1)
 
 if __name__=='__main__': unittest.main()

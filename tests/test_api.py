@@ -22,6 +22,8 @@ class ApiTests(unittest.TestCase):
   r,_=self.req(f"/conversations/{c2['id']}/chat",'POST',{'message':"My dog's name is Luna now."},t); r.read()
   _,c3=self.req('/conversations','POST',{},t); r,_=self.req(f"/conversations/{c3['id']}/chat",'POST',{'message':"What is my dog's name?"},t); events=[json.loads(x) for x in r.read().splitlines()]; self.assertIn('Luna',''.join(x.get('text','') for x in events))
   assistant=events[-1]['messageId']; _,saved=self.req('/feedback','POST',{'messageId':assistant,'kind':'up'},t); self.assertTrue(saved['saved'])
+  _,reflection=self.req('/reflections','POST',{},t); self.assertIn('Luna',reflection['content'])
+  _,messages=self.req('/messages?conversationId='+c3['id'],token=t); self.assertEqual(len(messages),2)
   _,forgot=self.req('/memories/forget','POST',{'query':"dog's name Luna"},t); self.assertGreater(forgot['forgotten'],0)
   _,hits=self.req("/memories/search?q=dog%27s%20name%20Luna",token=t); self.assertEqual(hits,[])
  def test_authentication_required(self):
